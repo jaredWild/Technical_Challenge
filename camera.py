@@ -7,6 +7,10 @@ import time
 # I then also measure how much changed between frames
 # only analyze ones that change more than a threshold
 
+# if I have time, I want to expand on it
+# if no memory in x amount of time, check for diff since
+#   last change cause something could be subtle
+
 camera = cv2.VideoCapture(0)
 
 #time between sample in secs
