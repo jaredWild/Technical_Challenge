@@ -18,8 +18,8 @@ from datetime import datetime
 # I then also measure how much changed between frames
 # only analyze ones that change more than a threshold
 
-# if I had more time, i'd alter things a bit further. 
-# I'd like to 
+# importance may need to be adjusted, but its hard to tell considering I was simply testing myself 
+#   moving in a room or walking around with the camera
 
 # ---------------------------------------------------PROMPTS----------------visual separation (this just helps me see things better)
 # prompts
@@ -66,9 +66,9 @@ last_sample_time = 0
 
 RESIZE_SCALE = 0.25
 
-# 5 felt too high, i lowered it to 3. 
-# but to make it easier for testing, I have been altering it to varying degrees
-CHANGE_THRESHOLD = 10.0
+# i have no idea what threshold to put this at. in my room with just me moving around, 5-10 works fairly well. 
+#   it would need to be changed depending on context
+CHANGE_THRESHOLD = 20.0
 
 # compress quality
 JPEG_QUALITY = 80
