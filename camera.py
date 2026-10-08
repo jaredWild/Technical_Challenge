@@ -69,7 +69,7 @@ RESIZE_SCALE = 0.25
 
 # i have no idea what threshold to put this at. in my room with just me moving around, 5-10 works fairly well. 
 #   it would need to be changed depending on context
-CHANGE_THRESHOLD = 20.0
+CHANGE_THRESHOLD = 10.0
 
 # compress quality
 JPEG_QUALITY = 80
