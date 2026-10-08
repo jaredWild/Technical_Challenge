@@ -2,6 +2,12 @@ from google import genai
 import os
 from dotenv import load_dotenv
 
+# currently using a free model as an image analyzer as 
+#   this is an early proof of concept 
+# both because its free and light
+# if this gets expanded on and I need something with higher quality, I can always bump it up
+
+
 load_dotenv()
 
 api_key = os.getenv("GEMINI_API_KEY")
