@@ -5,6 +5,7 @@ import threading
 import queue
 import json
 import sqlite3
+import numpy as np
 
 from dotenv import load_dotenv
 from google import genai
@@ -75,6 +76,16 @@ JPEG_QUALITY = 80
 
 # prevent queue size to control ram usage
 MAX_QUEUE_SIZE = 50
+
+
+# for subtle movements - timing
+SLOW_CHANGE_INTERVAL = 10.0
+last_stored_time = None
+last_slow_check_time = time.time()
+
+# last frame and limiting to only 1 thread
+last_stored_frame = None
+last_stored_frame_lock = threading.Lock()
 
 # for the return prompt
 class MemoryAnalysis(BaseModel):
@@ -172,6 +183,7 @@ def analyze_change(previous_image_bytes, current_image_bytes):
 
 def analysis_worker():
     previous_analyzed_image = None
+    global last_stored_frame, last_stored_time
 
     # for memories
     connection = sqlite3.connect("memories.db")
@@ -190,7 +202,8 @@ def analysis_worker():
 
     connection.commit()
 
-    # then to the normal stuff
+
+    # then on to standard work
     while True:
 
         item = frame_queue.get()
@@ -239,6 +252,27 @@ def analysis_worker():
             )
 
             connection.commit()
+
+            # decode it (yeah, i know it's ineffecient, but that could be fixed later)
+            decoded_image = cv2.imdecode(
+                np.frombuffer(current_image, dtype=np.uint8),
+                cv2.IMREAD_COLOR
+            )
+
+            # resize
+            stored_resized_frame = cv2.resize(
+                decoded_image,
+                None,
+                fx=RESIZE_SCALE,
+                fy=RESIZE_SCALE,
+                interpolation=cv2.INTER_AREA
+            )
+
+            
+            with last_stored_frame_lock:
+                last_stored_frame = stored_resized_frame
+                last_stored_time = time.time()
+
 
             print("\n--- MEMORY CREATED ---")
             print(json.dumps(memory, indent=2))
@@ -291,12 +325,14 @@ while True:
             interpolation=cv2.INTER_AREA
         )
 
+        # this is to prevent double-saves
+        frame_queued = False
 
         # ====================================================
         # INITIAL MEMORY
         # ====================================================
         
-        # get the initial memory, and everything required with it
+        # get the initial memory when starting the camera, and everything required with it
 
         if not initial_frame_queued:
 
@@ -352,12 +388,75 @@ while True:
                             "Queue size:",
                             frame_queue.qsize()
                         )
+                        frame_queued = True
 
                     except queue.Full:
                         print(
                             "Frame queue full - "
                             "dropping selected frame."
                         )
+            # check if it's been a long time
+            if (not frame_queued 
+                and current_time - last_slow_check_time >= SLOW_CHANGE_INTERVAL
+            ):
+
+                
+                # get last frame
+                with last_stored_frame_lock:
+                    stored_frame = (
+                        last_stored_frame.copy()
+                        if last_stored_frame is not None
+                        else None
+                    )
+
+                    # get last time
+                    stored_time = last_stored_time
+
+                #check if enough time has passed
+                if (stored_frame is not None
+                    and stored_time is not None
+                    and current_time - stored_time >= SLOW_CHANGE_INTERVAL
+                ):
+                    # get difference
+                    slow_difference = cv2.absdiff(
+                        stored_frame,
+                        resized_frame
+                    )
+
+                    slow_change_amount = slow_difference.mean()
+
+                    print(
+                        "Slow change check:",
+                        slow_change_amount
+                    )
+
+                    # save the image
+                    if slow_change_amount >= CHANGE_THRESHOLD:
+                        encoded_frame = encode_frame(frame)
+
+                        timestamp = datetime.now().isoformat(
+                            timespec="seconds"
+                        )
+
+                        try:
+                            frame_queue.put_nowait(
+                                (timestamp, encoded_frame)
+                            )
+
+                            print(
+                                "Slow change detected. Frame queued. Change:",
+                                slow_change_amount,
+                                "Queue size:",
+                                frame_queue.qsize()
+                            )
+
+                        except queue.Full:
+                            print(
+                                "Frame queue full - dropping selected frame."
+                            )
+
+                # Ddon't check till another interval has passed
+                last_slow_check_time = current_time
 
         # change to new frame and time
         previous_frame = resized_frame
