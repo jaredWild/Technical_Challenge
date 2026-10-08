@@ -4,12 +4,12 @@ import os
 import threading
 import queue
 import json
-
+import sqlite3
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -17,6 +17,9 @@ from datetime import datetime
 # reduce down to quarter size
 # I then also measure how much changed between frames
 # only analyze ones that change more than a threshold
+
+# if I had more time, i'd alter things a bit further. 
+# I'd like to 
 
 # ---------------------------------------------------PROMPTS----------------visual separation (this just helps me see things better)
 # prompts
@@ -27,25 +30,12 @@ Analyze this image as the initial observation for a visual memory system.
 Identify:
 - entities: important visible people, animals, objects, or other notable things
 - environment: a concise description of the general surroundings or setting
-
-Focus on information that would be useful to remember later.
-Avoid unnecessary visual details.
-"""
-# old prompt
-'''
-initial_prompt = """
-Analyze this image as the initial observation for a visual memory system.
-
-Return:
-- entities: important visible people, animals, objects, or other notable things
-- environment: a concise description of the general surroundings or setting
 - change: must be "Initial observation"
 - importance: must be the integer 10 
 
 Focus on information that would be useful to remember later.
 Avoid unnecessary visual details.
 """
-'''
 
 change_prompt = """
 Compare these two images as observations in a visual memory system.
@@ -76,8 +66,9 @@ last_sample_time = 0
 
 RESIZE_SCALE = 0.25
 
-# 5 was too high, 3.0 may still need to be lowered
-CHANGE_THRESHOLD = 3.0
+# 5 felt too high, i lowered it to 3. 
+# but to make it easier for testing, I have been altering it to varying degrees
+CHANGE_THRESHOLD = 10.0
 
 # compress quality
 JPEG_QUALITY = 80
@@ -90,7 +81,7 @@ class MemoryAnalysis(BaseModel):
     entities: list[str]
     environment: str
     change: str
-    importance: int
+    importance: int = Field(ge=1, le=10)
 
 # api
 load_dotenv()
@@ -176,18 +167,37 @@ def analyze_change(previous_image_bytes, current_image_bytes):
 
     return response.parsed
 
-# -----------------------------------------------------------threads-------------------------------------------------------
+
+# -----------------------------------------------------------THREADS-------------------------------------------------------
 
 def analysis_worker():
-
     previous_analyzed_image = None
 
+    # for memories
+    connection = sqlite3.connect("memories.db")
+
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            entities TEXT,
+            environment TEXT,
+            change TEXT,
+            importance INTEGER,
+            image BLOB
+        )
+    """)
+
+    connection.commit()
+
+    # then to the normal stuff
     while True:
 
         item = frame_queue.get()
 
         # none tells it to shut down
         if item is None:
+            frame_queue.task_done()
             break
 
         timestamp, current_image = item
@@ -211,6 +221,25 @@ def analysis_worker():
                 **analysis.model_dump()
             }
 
+            # saving the memories
+            connection.execute(
+                """
+                INSERT INTO memories
+                (timestamp, entities, environment, change, importance, image)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    memory["timestamp"],
+                    json.dumps(memory["entities"]),
+                    memory["environment"],
+                    memory["change"],
+                    memory["importance"],
+                    current_image
+                )
+            )
+
+            connection.commit()
+
             print("\n--- MEMORY CREATED ---")
             print(json.dumps(memory, indent=2))
 
@@ -222,6 +251,8 @@ def analysis_worker():
 
         finally:
             frame_queue.task_done()
+
+    connection.close()
 
 
 # start actual worker
@@ -308,7 +339,7 @@ while True:
                         timespec="seconds"
                     )
 
-                    # put on the queue if possible, wait until it is atm
+                    # put on the queue if possible, don't 
                     #   will definitely change this later if I have time
                     try:
                         frame_queue.put_nowait(
@@ -351,127 +382,3 @@ frame_queue.put(None)
 worker.join()
 
 print("Finished.")
-
-'''
-def analyze_frame(current_frame, previous_analyzed_frame=None):
-
-    current_image = frame_to_part(current_frame)
-
-    if previous_analyzed_frame is None:
-        contents = [
-            current_image,
-            initial_prompt
-        ]
-
-    else:
-        previous_image = frame_to_part(previous_analyzed_frame)
-
-        contents = [
-            change_prompt,
-            "Previous observation:",
-            previous_image,
-            "Current observation:",
-            current_image
-        ]
-
-    response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=Memory
-        )
-    )
-
-    memory = response.parsed
-
-    # manually enforce this cause it probably won't do it right, especially with the limited prompt
-    if previous_analyzed_frame is None:
-        memory.change = "Initial observation."
-        memory.importance = 10
-
-    return memory
-
-
-executor = ThreadPoolExecutor(max_workers=1)
-
-analysis_future = None
-pending_analysis_frame = None
-
-last_analyzed_frame = None
-previous_frame = None
-
-camera = cv2.VideoCapture(0)
-
-
-
-
-while True: 
-    success, frame = camera.read()
-
-    # just for checking
-    if not success:
-        print("Failed to read from camera.")
-        break
-
-    
-    cv2.imshow("Camera", frame)
-
-    current_time = time.time()
-
-    # getting frames
-    if current_time - last_sample_time >= SAMPLE_INTERVAL:
-        # print("Sampled frame")
-
-        resized_frame = cv2.resize(
-            frame,
-            None,
-            fx=RESIZE_SCALE,
-            fy=RESIZE_SCALE,
-            interpolation=cv2.INTER_AREA
-        )
-
-        
-
-        # First memory
-        if not initial_memory_created:
-            print("\n--- INITIAL MEMORY ---")
-            result = analyze_frame(frame, initial_prompt)
-
-            if result is not None:
-                print(result)
-                print("change: Initial observation.")
-                print("importance: 10")
-                initial_memory_created = True
-                last_analysis_time = current_time
-
-        else:
-            # Compare current sampled frame to previous sampled frame
-            if previous_frame is not None:
-                difference = cv2.absdiff(previous_frame, resized_frame)
-                change_amount = difference.mean()
-
-                if change_amount >= CHANGE_THRESHOLD:
-                    print("\n--- CHANGE DETECTED ---")
-                    print("change_amount:", change_amount)
-                    
-                    result = analyze_frame(frame, change_prompt)
-                    
-                    if result is not None:
-                        print(result)
-                        
-                    last_analysis_time = current_time
-
-        previous_frame = resized_frame
-
-        last_sample_time = current_time
-
-    key = cv2.waitKey(1)
-
-    # quit with q as necessary
-    if key == ord("q"):
-        break
-
-camera.release()
-cv2.destroyAllWindows()
-'''
